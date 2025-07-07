@@ -1,20 +1,33 @@
 import { Server } from "socket.io";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import Message from "../api/models/Message.js";
-import Chat from "../api/models/Chat.js";
+
 
 // Load environment variables from .env file
 dotenv.config();
 
+
+mongoose.connect(process.env.DATABASE_URL, {
+  serverSelectionTimeoutMS: 60000,
+  socketTimeoutMS: 60000,
+  connectTimeoutMS: 60000
+}).then(() => {
+  console.log('✅ Socket server connected to MongoDB');
+}).catch(err => {
+  console.error('❌ Socket server MongoDB connection error:', err);
+});
+
+
+
+
 // Get client URL and port from environment variables
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const CLIENT_URL = process.env.CLIENT_URL;
 const PORT = process.env.PORT || 4001;
 
 // Allow multiple client origins
 const allowedOrigins = [
   CLIENT_URL,
-  "http://localhost:5173",
+  process.env.CLIENT_URL,
 ];
 
 console.log(
@@ -54,7 +67,8 @@ const removeUser = (socketId) => {
 };
 
 const getUser = (userId) => {
-  return onlineUsers.find((user) => user.userId === userId);
+  // Always compare as strings
+  return onlineUsers.find((user) => user.userId.toString() === userId.toString());
 };
 
 io.on("connection", (socket) => {
@@ -97,76 +111,21 @@ io.on("connection", (socket) => {
 
   // Update the "sendMessage" event handler
   socket.on("sendMessage", async ({ receiverId, data }) => {
-    console.log(
-      `📨 Message from ${data.senderId} to ${receiverId}: ${data.content.substring(
-        0,
-        20
-      )}...`
-    );
+    console.log("[DEBUG] sendMessage event received");
+    console.log("  data.chatId:", data.chatId);
+    console.log("  data.senderId:", data.senderId);
+    console.log("  receiverId:", receiverId);
+    console.log("Current onlineUsers:", onlineUsers);
+    console.log("Looking for receiverId:", receiverId);
 
-    // Get the socket's user ID from the onlineUsers array
-    const socketUser = onlineUsers.find((user) => user.socketId === socket.id);
-
-    if (!socketUser) {
-      console.warn(`⚠️ Unauthorized socket attempt to send message`);
-      return;
-    }
-
-    if (data.senderId !== socketUser.userId) {
-      console.warn(
-        `⚠️ User ${socketUser.userId} attempted to send message as ${data.senderId}. Blocked.`
-      );
-      return;
-    }
-
-    // Save message to DB
-    try {
-      // Find the chat
-      const chat = await Chat.findById(data.chatId);
-      if (!chat) {
-        console.warn(`❌ Chat not found: ${data.chatId}`);
-        return;
-      }
-      // Check if sender is a participant
-      if (![chat.user1Id.toString(), chat.user2Id.toString()].includes(data.senderId)) {
-        console.warn(`❌ Sender is not a participant in chat ${data.chatId}`);
-        return;
-      }
-      // Create and save the message
-      const newMessage = await Message.create({
-        content: data.content,
-        senderId: data.senderId,
-        conversationId: data.chatId,
-      });
-      // Add message to chat
-      chat.messages.push(newMessage._id);
-      chat.lastMessage = data.content;
-      await chat.save();
-      // Emit to receiver if online
-      const receiver = getUser(receiverId);
-      if (receiver) {
-        io.to(receiver.socketId).emit("getMessage", {
-          ...data,
-          id: newMessage._id,
-          createdAt: newMessage.createdAt,
-        });
-      } else {
-        // Store pending messages for offline users
-        if (!global.pendingMessages) {
-          global.pendingMessages = {};
-        }
-        if (!global.pendingMessages[receiverId]) {
-          global.pendingMessages[receiverId] = [];
-        }
-        global.pendingMessages[receiverId].push({
-          ...data,
-          id: newMessage._id,
-          createdAt: newMessage.createdAt,
-        });
-        console.log(`📫 Message stored for offline user ${receiverId}`);
-      }
-    } catch (err) {
-      console.error("❌ Error saving message to DB:", err);
+    // Just relay the message in real time
+    const receiver = getUser(receiverId);
+    if (receiver) {
+      io.to(receiver.socketId).emit("getMessage", { ...data });
+      console.log("📤 Relayed message to receiver via socket:", receiver.socketId);
+    } else {
+      // Optionally, store in pending messages or just drop if offline
+      console.log("📭 Receiver offline, message not delivered in real time.");
     }
   });
 
